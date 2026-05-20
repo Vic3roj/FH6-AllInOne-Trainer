@@ -1,6 +1,6 @@
 # FH6 All-in-One Trainer
 
-An improved, all-in-one trainer for **Forza Horizon 6** — runtime hooks for player profile values + live SQL access to the game's in-memory database. Single-file `.exe`, no extra runtime needed.
+An all-in-one trainer for **Forza Horizon 6** — runtime hooks for player profile values + car/physics cheats + live SQL access to the game's in-memory database. Single-file `.exe`, no extra runtime needed.
 
 > ⚠️ **Use at your own risk.** This trainer modifies game memory. Microsoft / Turn 10 can ban your account. **Solo / Free Roam only — never use online (Rivals, Eventlab, Multiplayer, leaderboards).**
 
@@ -10,16 +10,30 @@ Latest release: **[GitHub Releases](../../releases/latest)** — grab `FH6AllInO
 
 ## ✅ Working Features
 
-### Quick Start (Dashboard)
-- **One-click Quick Start** — 999M Credits + Free Cars + Autoshow Unlock + All Cars in Garage, instantly
-
-### Runtime Hooks (Unlocks Page)
+### Quick Actions (Unlocks Page)
+- **Quick Start** — 999M Credits + Free Cars + Autoshow Unlock + All Cars in Garage, one click
 - **Max All** — set Credits 999M, Wheelspins 999, Super Wheelspins 999, Skill Points 999K in one click
+
+### Profile Values (Unlocks Page)
 - **Credits (CR)** — custom value with presets (10K, 100K, 1M, 100M, 999M), locked
 - **Wheelspins** — custom count with presets (10, 50, 100, 999)
 - **Super Wheelspins** — custom count with presets (10, 50, 100, 999)
 - **Skill Points** — custom value with presets (100, 1K, 10K, 999K), locked
 - **Sell Payout x** — multiply car sell price by any factor
+
+### Car & Physics (Unlocks Page)
+- **Freeze AI** — stops all AI Drivatar cars during races (zeroes their velocity)
+- **Teleport to Waypoint** — instantly teleport to any map waypoint
+- **No Clip** — disable collision detection, drive through walls and terrain
+- **Gravity Multiplier** — adjust gravity (low gravity, moon gravity, etc.)
+- **No Water Drag** — remove water resistance when driving through lakes/rivers
+- **Remove Build Cap** — remove engine swap / build power limit
+
+### World & Events (Unlocks Page)
+- **Time of Day** — set any hour (6 = dawn, 12 = noon, 18 = dusk, 0 = midnight)
+- **Skill Score Multiplier** — multiply skill chain score earned (5x, 10x, 100x)
+- **Prize Scale** — multiply wheelspin reward value (5x, 10x, 50x)
+- **Race Time Scale** — slow down or speed up race timer (0 = freeze timer)
 
 ### SQL Database (Database Page)
 - **Unlock Everything** — applies all 5 SQL cheats at once (one click)
@@ -57,15 +71,13 @@ Output: `bin/Release/net10.0-windows/win-x64/publish/FH6AllInOneTrainer.exe`
 
 ## 🙏 Credits
 
-This trainer builds on the work of several people:
-
 | Who | Contribution |
 |-----|-------------|
-| **[paris' club](https://discord.gg/WSd3bRNJuJ)** | All core cheats: runtime hooks (Credits, Wheelspins, Super Wheelspins, Skill Points, Sell Payout), SQL features (Free Cars, Autoshow, Install Flags, Add All Cars, Clear NEW Tag), CRC bypass, code caves, memory injection foundation |
+| **[paris' club](https://discord.gg/WSd3bRNJuJ)** | Core cheats: runtime hooks (Credits, Wheelspins, Skill Points, Sell Payout), SQL features (Free Cars, Autoshow, Install Flags, Add All Cars, Clear NEW Tag), CRC bypass, code caves, memory injection |
+| **[ForzaMods](https://github.com/ForzaMods/Forza-Mods-AIO)** | AOB signatures for Freeze AI, Teleport, No Clip, Gravity, No Water Drag, Time of Day, Skill Score Multiplier, Prize Scale, Remove Build Cap, Race Time Scale — [Forza-Mods-AIO](https://github.com/ForzaMods/Forza-Mods-AIO) |
 | **[Chaarkor](https://github.com/Chaarkoor)** | Original Avalonia UI shell, MVVM architecture, design system, pattern scanner — [Chaarkors-FH6-Trainer](https://github.com/Chaarkoor/Chaarkors-FH6-Trainer) |
-| **[ForzaMods](https://github.com/ForzaMods/Forza-Mods-AIO)** | Upstream AOB signatures and hook techniques — [Forza-Mods-AIO](https://github.com/ForzaMods/Forza-Mods-AIO) |
 | **[Reloaded.Memory](https://github.com/Reloaded-Project/Reloaded.Memory.Sigscan)** | SIMD-accelerated AOB scanner |
-| **[changcheng967](https://github.com/changcheng967)** | All-in-one improvements: Max All, Unlock Everything, Quick Start, preset buttons, rebrand |
+| **[changcheng967](https://github.com/changcheng967)** | All-in-one improvements: Quick Start, Max All, Unlock Everything, 10 new cheats, UI redesign, rebrand |
 
 ## 📝 License
 
@@ -73,4 +85,4 @@ GPL-3.0 — source must remain open. See [LICENSE](LICENSE).
 
 ---
 
-**FH6 All-in-One Trainer** · 2026 · GPL-3.0 · Solo / Free Roam only
+**FH6 All-in-One Trainer** · v2.0.0 · 2026 · GPL-3.0 · Solo / Free Roam only
