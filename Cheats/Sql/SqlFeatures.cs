@@ -13,6 +13,10 @@ public enum SqlFeature
     FreeWheels,
     UnlockUpgradePresets,
     FullAutoshow,
+    DriftScoreScalar,
+    MaxTraction,
+    TorqueScale,
+    DragScale,
 }
 
 /// <summary>
@@ -106,6 +110,40 @@ internal static class SqlFeatureCatalog
                 "UPDATE CarBuckets SET CarBucket=0, BucketHero=0 WHERE CarBucket IS NULL;",
             ]),
 
+        SqlFeature.DriftScoreScalar => new(
+            "Drift Score Scalar (10x)",
+            "Sets DriftScoreScalar = 10.0 on all tracks — drift scores are multiplied by 10x.",
+            [
+                "CREATE TABLE IF NOT EXISTS _backup_DriftScoreScalar AS SELECT rowid, DriftScoreScalar FROM Tracks;",
+                "UPDATE Tracks SET DriftScoreScalar = 10.0;",
+            ]),
+
+        SqlFeature.MaxTraction => new(
+            "Max Traction (Grip Hack)",
+            "Sets Traction_Road = 10.0 and WetFriction scales to 5.0 on all cars and tire compounds — massive grip increase.",
+            [
+                "CREATE TABLE IF NOT EXISTS _backup_MaxTraction_Car AS SELECT Id, Traction_Road FROM Data_Car;",
+                "UPDATE Data_Car SET Traction_Road = 10.0;",
+                "CREATE TABLE IF NOT EXISTS _backup_MaxTraction_Tire AS SELECT rowid, WetFrictionModFrictionScale, WetOffroadFrictionScale FROM List_TireCompound;",
+                "UPDATE List_TireCompound SET WetFrictionModFrictionScale = 5.0, WetOffroadFrictionScale = 5.0;",
+            ]),
+
+        SqlFeature.TorqueScale => new(
+            "Torque Scale (2x)",
+            "Sets GameTorqueScale = 2.0 on all cars — doubles engine torque output.",
+            [
+                "CREATE TABLE IF NOT EXISTS _backup_TorqueScale AS SELECT Id, GameTorqueScale FROM Data_Car;",
+                "UPDATE Data_Car SET GameTorqueScale = 2.0;",
+            ]),
+
+        SqlFeature.DragScale => new(
+            "Reduce Drag (0.5x)",
+            "Sets GameDragScale = 0.5 on all cars — halves aerodynamic drag for higher top speed.",
+            [
+                "CREATE TABLE IF NOT EXISTS _backup_DragScale AS SELECT Id, GameDragScale FROM Data_Car;",
+                "UPDATE Data_Car SET GameDragScale = 0.5;",
+            ]),
+
         _ => throw new System.InvalidOperationException("Unknown SQL feature."),
     };
 
@@ -145,6 +183,23 @@ internal static class SqlFeatureCatalog
             "UPDATE UpgradePresetPackages SET Purchasable = (SELECT Purchasable FROM _backup_UpgradePresets WHERE _backup_UpgradePresets.Id = UpgradePresetPackages.Id) WHERE EXISTS (SELECT 1 FROM _backup_UpgradePresets WHERE _backup_UpgradePresets.Id = UpgradePresetPackages.Id);",
         ],
         SqlFeature.FullAutoshow => [],   // view recreation; one-shot
+        SqlFeature.DriftScoreScalar =>
+        [
+            "UPDATE Tracks SET DriftScoreScalar = (SELECT DriftScoreScalar FROM _backup_DriftScoreScalar WHERE _backup_DriftScoreScalar.rowid = Tracks.rowid) WHERE EXISTS (SELECT 1 FROM _backup_DriftScoreScalar WHERE _backup_DriftScoreScalar.rowid = Tracks.rowid);",
+        ],
+        SqlFeature.MaxTraction =>
+        [
+            "UPDATE Data_Car SET Traction_Road = (SELECT Traction_Road FROM _backup_MaxTraction_Car WHERE _backup_MaxTraction_Car.Id = Data_Car.Id) WHERE EXISTS (SELECT 1 FROM _backup_MaxTraction_Car WHERE _backup_MaxTraction_Car.Id = Data_Car.Id);",
+            "UPDATE List_TireCompound SET WetFrictionModFrictionScale = (SELECT WetFrictionModFrictionScale FROM _backup_MaxTraction_Tire WHERE _backup_MaxTraction_Tire.rowid = List_TireCompound.rowid), WetOffroadFrictionScale = (SELECT WetOffroadFrictionScale FROM _backup_MaxTraction_Tire WHERE _backup_MaxTraction_Tire.rowid = List_TireCompound.rowid) WHERE EXISTS (SELECT 1 FROM _backup_MaxTraction_Tire WHERE _backup_MaxTraction_Tire.rowid = List_TireCompound.rowid);",
+        ],
+        SqlFeature.TorqueScale =>
+        [
+            "UPDATE Data_Car SET GameTorqueScale = (SELECT GameTorqueScale FROM _backup_TorqueScale WHERE _backup_TorqueScale.Id = Data_Car.Id) WHERE EXISTS (SELECT 1 FROM _backup_TorqueScale WHERE _backup_TorqueScale.Id = Data_Car.Id);",
+        ],
+        SqlFeature.DragScale =>
+        [
+            "UPDATE Data_Car SET GameDragScale = (SELECT GameDragScale FROM _backup_DragScale WHERE _backup_DragScale.Id = Data_Car.Id) WHERE EXISTS (SELECT 1 FROM _backup_DragScale WHERE _backup_DragScale.Id = Data_Car.Id);",
+        ],
         _ => [],
     };
 

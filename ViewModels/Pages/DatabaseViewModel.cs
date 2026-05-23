@@ -109,6 +109,10 @@ public partial class DatabaseViewModel : PageViewModelBase
     [RelayCommand] private void FreeWheels()      => Run(SqlFeature.FreeWheels,      "Free wheels");
     [RelayCommand] private void UnlockPresets()   => Run(SqlFeature.UnlockUpgradePresets, "Upgrade presets");
     [RelayCommand] private void FullAutoshow()    => Run(SqlFeature.FullAutoshow,    "Full autoshow (CarBuckets)");
+    [RelayCommand] private void DriftScore()      => Run(SqlFeature.DriftScoreScalar, "Drift Score 10x");
+    [RelayCommand] private void MaxTraction()     => Run(SqlFeature.MaxTraction,     "Max Traction (grip hack)");
+    [RelayCommand] private void TorqueScale()     => Run(SqlFeature.TorqueScale,     "Torque Scale 2x");
+    [RelayCommand] private void DragScale()       => Run(SqlFeature.DragScale,       "Reduce Drag 0.5x");
 
     [RelayCommand]
     private void ToggleFreeCarsLock()
