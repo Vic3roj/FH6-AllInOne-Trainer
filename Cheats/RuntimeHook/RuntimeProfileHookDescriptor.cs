@@ -78,137 +78,68 @@ internal static class ProfileFeatureCatalog
         RuntimeProfileFeature.Credits => new()
         {
             Key = "Credits", Name = "Credits",
-            // Code cave: intercepts MOV [rbx+disp32], eax at setter epilogue.
-            // When enabled, replaces eax with our desired value before the MOV executes.
-            // rbx = profile struct base (captured automatically), offset patched via OriginalRegions.
-            Signature = "89 83 ?? ?? ?? ?? 48 8B 5C 24 ?? 48 83 C4 ?? 5F C3 CC CC CC CC 48 89 5C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 8B F2",
-            MatchOffset = 0, HookSize = 6,
-            ExpectedOriginal = [0x89, 0x83],
-            AltSignatures =
-            [
-                "89 83 ?? ?? ?? ?? 48 8B 5C 24 ?? 48 83 C4 ?? 5F C3 CC CC CC CC 48 89 5C 24",
-                "89 83 ?? ?? ?? ?? 48 8B 5C 24 ?? 48 83 C4 ?? 5F C3 CC CC CC 48 89 5C 24",
-                "89 83 ?? ?? ?? ?? 48 8B 5C 24 ?? 48 83 C4 ?? 5F C3",
-                "89 83 ?? ?? ?? ??",
-            ],
-            ContextPattern = "E8 ?? ?? ?? ?? 84 C0",
-            ToggleOffset = 27, ValueOffset = 28,
+            // paris' club: resolve E8 CALL to actual setter, string-compare "Credits"
+            Signature = "E8 ? ? ? ? 89 84 ? ? ? ? ? 4C 8D ? ? ? ? ? 48 8B",
+            ResolveCallTarget = true, CallTargetOffset = 24,
+            HookSize = 6,
+            ExpectedOriginal = [72, 139, 79, 8, 51, 210],
+            ToggleOffset = 49, ValueOffset = 50,
             Asm =
             [
-                // cmp byte [rip+0x14], 1 → toggle at cave+7+0x14=27
-                0x80, 0x3D, 0x14, 0x00, 0x00, 0x00, 0x01,
-                // jne +6 → skip to original MOV at offset 15
-                0x75, 0x06,
-                // mov eax, [rip+0x0D] → value at cave+15+0x0D=28
-                0x8B, 0x05, 0x0D, 0x00, 0x00, 0x00,
-                // mov [rbx+disp32], eax (original, patched via OriginalRegions)
-                0x89, 0x83, 0x00, 0x00, 0x00, 0x00,
+                72, 139, 79, 8, 128, 61, 38, 0, 0, 0,
+                1, 117, 29, 72, 139, 84, 36, 32, 72, 184,
+                67, 114, 101, 100, 105, 116, 115, 0, 72, 57,
+                66, 180, 117, 8, 139, 21, 10, 0, 0, 0,
+                137, 23, 49, 210,
             ],
-            OriginalRegions = [(15, 0, 6)],
+            OriginalRegions = [(0, 0, 4), (42, 4, 2)],
         },
         RuntimeProfileFeature.Wheelspins => new()
         {
             Key = "Wheelspins", Name = "Wheelspins",
-            // Code cave: original is ADD [rbx+disp32], eax (increment).
-            // Cheat path does MOV instead (sets absolute value), original path does ADD.
-            Signature = "01 83 ?? ?? ?? ?? 48 8B 5C 24 ?? 48 83 C4 ?? 5F C3 CC CC CC 48 89 5C 24 ?? 57",
-            AltSignatures =
-            [
-                "01 83 ?? ?? ?? ?? 48 8B 5C 24 ?? 48 83 C4 ?? 5F C3 CC CC CC CC 48 89 5C 24",
-                "01 83 ?? ?? ?? ?? 48 8B 5C 24 ?? 48 83 C4 ?? 5F C3",
-                "01 83 ?? ?? ?? ?? 8B 83 ?? ?? ?? ?? 48 8B 5C 24",
-                "01 83 ?? ?? ?? ?? 8B 83",
-                "01 83 ?? ?? ?? ??",
-            ],
-            ContextPattern = "E8 ?? ?? ?? ?? 84 C0",
-            MatchOffset = 0, HookSize = 6,
-            ExpectedOriginal = [0x01, 0x83],
-            ToggleOffset = 37, ValueOffset = 38,
+            // paris' club: unique function prologue + rbx+10h field access
+            Signature = "48 89 5C 24 08 57 48 83 EC 20 48 8B FA 33 D2 48 8B 4F 10",
+            MatchOffset = 28, HookSize = 5,
+            ExpectedOriginal = [51, 210, 139, 95, 8],
+            ToggleOffset = 28, ValueOffset = 29,
             Asm =
             [
-                // cmp byte [rip+0x1E], 1 → toggle at cave+7+0x1E=37
-                0x80, 0x3D, 0x1E, 0x00, 0x00, 0x00, 0x01,
-                // jne +16 → original ADD at offset 25
-                0x75, 0x10,
-                // mov eax, [rip+0x17] → value at cave+15+0x17=38
-                0x8B, 0x05, 0x17, 0x00, 0x00, 0x00,
-                // mov [rbx+disp32], eax (MOV not ADD! offset patched via OriginalRegions)
-                0x89, 0x83, 0x00, 0x00, 0x00, 0x00,
-                // jmp +8 → skip original, land at engine's JMP back (offset 31)
-                0xEB, 0x08,
-                // nop padding (skipped by both paths)
-                0x90, 0x90,
-                // add [rbx+disp32], eax (full original instruction via OriginalRegions)
-                0x01, 0x83, 0x00, 0x00, 0x00, 0x00,
+                128, 61, 21, 0, 0, 0, 1, 117, 9, 139,
+                21, 14, 0, 0, 0, 137, 87, 8, 51, 210,
+                139, 95, 8,
             ],
-            OriginalRegions = [(17, 2, 4), (25, 0, 6)],
+            OriginalRegions = [(18, 0, 5)],
         },
         RuntimeProfileFeature.SuperWheelspins => new()
         {
             Key = "SuperWheelspins", Name = "Super Wheelspins",
-            // Code cave: original is MOV [rbx+0x1FC], eax.
-            // Same Template A as Credits — replace eax, fall through to original MOV.
-            Signature = "89 83 FC 01 00 00 8B 87 00 02 00 00 89 83 00 02 00 00",
-            AltSignatures =
-            [
-                "89 83 FC 01 00 00 8B ?? ?? 02 00 00 89 83 ?? 02 00 00",
-                "89 83 FC 01 00 00 8B",
-                "89 83 FC 01 00 00",
-                "01 83 FC 01 00 00",
-            ],
-            MatchOffset = 0, HookSize = 6,
-            ExpectedOriginal = [0x89, 0x83, 0xFC, 0x01, 0x00, 0x00],
-            ToggleOffset = 27, ValueOffset = 28,
+            // paris' club: unique function prologue + rbx+18h field access
+            Signature = "48 89 5C 24 08 57 48 83 EC 20 48 8B FA 33 D2 48 8B 4F 18",
+            MatchOffset = 28, HookSize = 5,
+            ExpectedOriginal = [51, 210, 139, 95, 16],
+            ToggleOffset = 28, ValueOffset = 29,
             Asm =
             [
-                // cmp byte [rip+0x14], 1 → toggle at cave+27
-                0x80, 0x3D, 0x14, 0x00, 0x00, 0x00, 0x01,
-                // jne +6 → original MOV at offset 15
-                0x75, 0x06,
-                // mov eax, [rip+0x0D] → value at cave+28
-                0x8B, 0x05, 0x0D, 0x00, 0x00, 0x00,
-                // mov [rbx+disp32], eax (original, patched via OriginalRegions)
-                0x89, 0x83, 0x00, 0x00, 0x00, 0x00,
+                128, 61, 21, 0, 0, 0, 1, 117, 9, 139,
+                21, 14, 0, 0, 0, 137, 87, 16, 51, 210,
+                139, 95, 16,
             ],
-            OriginalRegions = [(15, 0, 6)],
+            OriginalRegions = [(18, 0, 5)],
         },
         RuntimeProfileFeature.SkillPoints => new()
         {
             Key = "SkillPoints", Name = "Skill Points",
-            // Code cave: original is ADD [rbx+disp32], eax (increment).
-            // Cheat path does MOV (sets absolute value), original path does ADD.
-            Signature = "01 83 ?? ?? ?? ?? 8B 83 ?? ?? ?? ?? 48 8B 5C 24 ?? 48 83 C4",
-            AltSignatures =
-            [
-                "01 83 ?? ?? ?? ?? 8B 83 ?? ?? ?? ?? 48 8B 5C 24 ?? 48 83 C4 ?? 5F C3",
-                "01 83 ?? ?? ?? ?? 8B 83 ?? ?? ?? ?? 48 8B 5C 24 ?? 5F C3",
-                "01 83 ?? ?? ?? ?? 8B 83 ?? ?? ?? ?? 48 8B 5C 24",
-                "01 83 ?? ?? ?? ?? 8B 83 ?? ?? ?? ?? 48 8B",
-                "01 83 ?? ?? ?? ?? 8B 83",
-                "01 83 ?? ?? ?? ??",
-            ],
-            ContextPattern = "E8 ?? ?? ?? ?? 84 C0",
-            MatchOffset = 0, HookSize = 6,
-            ExpectedOriginal = [0x01, 0x83],
-            ToggleOffset = 37, ValueOffset = 38,
+            // paris' club: unique function prologue with test edx + rcx+48h load
+            Signature = "85 D2 78 32 48 89 5C 24 08 57 48 83 EC 20 8B DA 48 8B F9 48 8B 49 48",
+            MatchOffset = 34, HookSize = 5,
+            ExpectedOriginal = [51, 210, 137, 95, 64],
+            ToggleOffset = 25, ValueOffset = 26,
             Asm =
             [
-                // cmp byte [rip+0x1E], 1 → toggle at cave+37
-                0x80, 0x3D, 0x1E, 0x00, 0x00, 0x00, 0x01,
-                // jne +16 → original ADD at offset 25
-                0x75, 0x10,
-                // mov eax, [rip+0x17] → value at cave+38
-                0x8B, 0x05, 0x17, 0x00, 0x00, 0x00,
-                // mov [rbx+disp32], eax (MOV not ADD! offset patched via OriginalRegions)
-                0x89, 0x83, 0x00, 0x00, 0x00, 0x00,
-                // jmp +8 → skip original, land at engine's JMP back
-                0xEB, 0x08,
-                // nop padding
-                0x90, 0x90,
-                // add [rbx+disp32], eax (full original via OriginalRegions)
-                0x01, 0x83, 0x00, 0x00, 0x00, 0x00,
+                128, 61, 18, 0, 0, 0, 1, 117, 6, 139,
+                29, 11, 0, 0, 0, 51, 210, 137, 95, 64,
             ],
-            OriginalRegions = [(17, 2, 4), (25, 0, 6)],
+            OriginalRegions = [(15, 0, 5)],
         },
         RuntimeProfileFeature.DriftScoreMultiplier => new()
         {
