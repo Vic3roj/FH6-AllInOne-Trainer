@@ -18,7 +18,6 @@ public sealed class RuntimeHookEngine : IDisposable
     private readonly HashSet<ulong> _hookedAddresses = new();
     private readonly Dictionary<string, ulong> _preResolvedTargets = new(StringComparer.OrdinalIgnoreCase);
     private bool _preResolved;
-    private FnvProfileResolver? _fnvResolver;
 
     private IntPtr _handle;
     private Process? _process;
@@ -116,8 +115,6 @@ public sealed class RuntimeHookEngine : IDisposable
                             continue;
                         }
 
-                        if (!string.IsNullOrEmpty(desc.ContextPattern) && !HasContextPattern(moduleBytes, off, desc.ContextPattern))
-                            continue;
 
                         // Validate struct offset range for MOV/ADD [rbx+disp32] patterns
                         if (original.Length >= 6 && (original[0] == 0x89 || original[0] == 0x01) && original[1] == 0x83)
@@ -162,7 +159,7 @@ public sealed class RuntimeHookEngine : IDisposable
     public void   WriteInt32Public(ulong addr, int value) => WriteInt32(addr, value);
     public bool   IsExecutableAddressPublic(ulong addr) => IsExecutableAddress(addr);
     public bool   IsAddressHooked(ulong addr) => _hookedAddresses.Contains(addr);
-    public bool   IsFnvActive(RuntimeProfileFeature f) => _fnvResolver?.IsFieldActive(f) ?? false;
+
     public void   LogPublic(string msg) => L(msg);
 
     public string DiagnosticsTail(int lines = 12)
@@ -235,8 +232,6 @@ public sealed class RuntimeHookEngine : IDisposable
         RestoreRuntimeProfileHooks();
         RestoreCrcPointer();
         FreeCrcRetStub();
-        _fnvResolver?.Dispose();
-        _fnvResolver = null;
 
         _preResolved = false;
         _preResolvedTargets.Clear();
@@ -333,39 +328,6 @@ public sealed class RuntimeHookEngine : IDisposable
             return false;
         }
 
-        // Try FNV direct-write path for profile fields that support it
-        if (desc.SupportsDirectWrite)
-        {
-            try
-            {
-                // FNV direct-write: no .text modification, no CRC bypass needed.
-                // Values are written directly to the heap-allocated profile struct.
-                var resolver = EnsureFnvResolver();
-                if (resolver != null)
-                {
-                    var moduleBytes = ReadBytes(_mainBase, _mainSize);
-                    if (moduleBytes.Length > 0 && resolver.TryResolve(feature, moduleBytes))
-                    {
-                        if (!enabled)
-                        {
-                            resolver.StopLock(feature);
-                            L($"{desc.Name}: direct-write lock STOPPED");
-                            return true;
-                        }
-                        resolver.StartLock(feature, value, 5000);
-                        L($"{desc.Name}: direct-write lock STARTED, value={value}, struct=0x{resolver.StructBase:X}");
-                        return true;
-                    }
-                }
-                L($"{desc.Name}: FNV resolution failed, falling back to NOP-sled");
-            }
-            catch (Exception ex)
-            {
-                L($"{desc.Name}: FNV direct-write failed ({ex.Message}), falling back to NOP-sled");
-            }
-        }
-
-        // Legacy NOP-sled / code-cave path
         return ApplyProfileLegacy(feature, value, enabled, out error);
     }
 
@@ -405,26 +367,6 @@ public sealed class RuntimeHookEngine : IDisposable
         }
     }
 
-    private FnvProfileResolver? EnsureFnvResolver()
-    {
-        if (_fnvResolver != null) return _fnvResolver;
-        if (_mainBase == 0 || _mainSize <= 0) return null;
-
-        var moduleBytes = ReadBytes(_mainBase, _mainSize);
-        if (moduleBytes.Length == 0) return null;
-
-        _fnvResolver = new FnvProfileResolver(this);
-        if (!_fnvResolver.ResolveStructBase(moduleBytes))
-        {
-            _fnvResolver.Dispose();
-            _fnvResolver = null;
-            L("FNV: Could not resolve profile struct base");
-            return null;
-        }
-        L($"FNV: Profile struct base resolved at 0x{_fnvResolver.StructBase:X}");
-        return _fnvResolver;
-    }
-
     public bool UpdateValue(RuntimeProfileFeature feature, int value, out string? error)
     {
         error = null;
@@ -435,75 +377,6 @@ public sealed class RuntimeHookEngine : IDisposable
             return false;
         }
 
-        // FNV direct-write: update the lock value directly
-        if (desc.SupportsDirectWrite)
-        {
-            // If FNV resolver is active for this field, just update the lock
-            if (_fnvResolver != null && _fnvResolver.IsFieldActive(feature))
-            {
-                try
-                {
-                    _fnvResolver.StartLock(feature, value, 5000);
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    error = ex.Message;
-                    return false;
-                }
-            }
-
-            // If NOP-sled fallback was used, try FNV resolution again
-            // (it might succeed now if the heap state changed)
-            try
-            {
-                var resolver = EnsureFnvResolver();
-                if (resolver != null)
-                {
-                    var moduleBytes = ReadBytes(_mainBase, _mainSize);
-                    if (moduleBytes.Length > 0 && resolver.TryResolve(feature, moduleBytes))
-                    {
-                        // Stop the NOP-sled hook first
-                        if (_hooks.TryGetValue(desc.Key, out var det))
-                            WriteByte(det.DetourAddress + (ulong)desc.ToggleOffset, 0);
-
-                        // Start FNV direct-write lock instead
-                        resolver.StartLock(feature, value, 5000);
-                        L($"{desc.Name}: switched from NOP-sled to FNV direct-write");
-                        return true;
-                    }
-                }
-            }
-            catch { /* FNV still failing, fall through */ }
-
-            // NOP-sled path — pure NOP-sleds can't update values
-            lock (_lock)
-            {
-                if (!_hooks.TryGetValue(desc.Key, out var det))
-                {
-                    error = $"{desc.Name} is not enabled.";
-                    return false;
-                }
-                if (desc.ValueOffset < 0)
-                {
-                    // NOP-sled doesn't embed values — re-enable with new value (NOP-sled is a no-op for value)
-                    L($"{desc.Name}: NOP-sled does not support value updates (value={value} ignored, cheat remains active)");
-                    return true;
-                }
-                try
-                {
-                    WriteInt32(det.DetourAddress + (ulong)desc.ValueOffset, value);
-                    return true;
-                }
-                catch (Exception ex)
-                {
-                    error = ex.Message;
-                    return false;
-                }
-            }
-        }
-
-        // Non-direct-write features
         lock (_lock)
         {
             if (!_hooks.TryGetValue(desc.Key, out var det))
@@ -513,8 +386,8 @@ public sealed class RuntimeHookEngine : IDisposable
             }
             if (desc.ValueOffset < 0)
             {
-                error = $"{desc.Name} does not accept a value.";
-                return false;
+                L($"{desc.Name}: NOP-sled does not support value updates (value={value} ignored, cheat remains active)");
+                return true;
             }
             try
             {
@@ -590,7 +463,7 @@ public sealed class RuntimeHookEngine : IDisposable
     /// <summary>
     /// Multi-candidate signature resolver with context-aware validation.
     /// Tries primary signature first, then AltSignatures as fallbacks.
-    /// For each match, validates ContextPattern (permission check) within 256 bytes before.
+    /// For each match, validates ExpectedOriginal and struct offset ranges.
     /// Deduplicates against addresses already claimed by other cheats.
     /// Picks the best candidate:
     ///  1. Exact match (bytes == ExpectedOriginal) with context — preferred
@@ -647,12 +520,6 @@ public sealed class RuntimeHookEngine : IDisposable
                     continue;
                 }
 
-                // Context-aware validation: permission check pattern must exist within 256 bytes before match
-                if (!string.IsNullOrEmpty(desc.ContextPattern) && !HasContextPattern(moduleBytes, off, desc.ContextPattern))
-                {
-                    L($"{desc.Name}: match at 0x{hookAddr:X} ({label}) — context pattern not found nearby, skipping");
-                    continue;
-                }
 
                 // Validate struct offset range for MOV/ADD [rbx+disp32] patterns
                 if (original.Length >= 6 && (original[0] == 0x89 || original[0] == 0x01) && original[1] == 0x83)
@@ -710,25 +577,6 @@ public sealed class RuntimeHookEngine : IDisposable
     /// <summary>
     /// In-place context search — scans moduleBytes[matchOffset-256..matchOffset]
     /// without allocating a sub-array.
-    /// </summary>
-    private static bool HasContextPattern(byte[] moduleBytes, int matchOffset, string contextPattern)
-    {
-        var ctx = Pattern.Parse(contextPattern);
-        int searchStart = Math.Max(0, matchOffset - 256);
-        int searchEnd = matchOffset - ctx.Length;
-        if (searchEnd < searchStart) return false;
-        for (var i = searchStart; i <= searchEnd; i++)
-        {
-            var match = true;
-            for (var j = 0; j < ctx.Length; j++)
-            {
-                if (ctx[j] != -1 && moduleBytes[i + j] != ctx[j]) { match = false; break; }
-            }
-            if (match) return true;
-        }
-        return false;
-    }
-
     /// <summary>
     /// Extracts the struct displacement from MOV/ADD [rbx+disp32], eax instructions
     /// for diagnostic logging. Returns empty string if not applicable.

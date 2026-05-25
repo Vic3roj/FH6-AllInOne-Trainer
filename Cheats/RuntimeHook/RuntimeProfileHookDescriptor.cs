@@ -37,7 +37,7 @@ internal sealed class RuntimeProfileHookDescriptor
     public string Name = "";
     public string Signature = "";
     public string[] AltSignatures = [];
-    public string? ContextPattern;
+
     public int MatchOffset;
     public bool ResolveCallTarget;
     public int CallTargetOffset;
@@ -55,8 +55,6 @@ internal sealed class RuntimeProfileHookDescriptor
     public int ValueOffset = -1;
     /// <summary>Non-null means this cheat hooks the wrong function in FH6 — do not install.</summary>
     public string? BrokenNote;
-    /// <summary>If true, use FNV direct struct write instead of NOP-sled.</summary>
-    public bool SupportsDirectWrite;
 }
 
 internal sealed class RuntimeDetour
