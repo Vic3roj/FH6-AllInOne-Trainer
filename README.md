@@ -42,6 +42,8 @@ Uses inline code cave hooks with toggle+value slots — based on the paris' club
 - 7/7 integrity check patches (MemCmp, PageHash, TextHash, CodeSection, Checksum, TerminateGuard, ResumeReboot)
 - **TerminateGuard** — patches the conditional `TerminateProcess` call that caused ~10 minute auto-shutdown
 - **ResumeReboot** — prevents GamePass/Windows Store silent reboot on alt-tab by patching the PFGameSaves resume handler
+- **IAT shutdown hooks** — replaces `TerminateProcess` and `ExitProcess` IAT entries with stubs that block self-termination (catches ALL shutdown call sites, not just known ones)
+- Process death detection with exit code logging for diagnostics
 - Deferred retry for Denuvo-encrypted pages — signatures that aren't available on first scan are retried during the CRC heartbeat
 - Per-hook error handling — if one hook fails (e.g., Denuvo-protected page), other cheats continue working
 - CRC spike detection — aborts tick if Phase 1 restore takes >500ms
