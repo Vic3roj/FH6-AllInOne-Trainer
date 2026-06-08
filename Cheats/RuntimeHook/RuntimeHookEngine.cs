@@ -687,35 +687,48 @@ public sealed class RuntimeHookEngine : IDisposable
         // a random C3 byte from the game's .text section (which is fragile — the byte
         // could be in the middle of an instruction, or the game could verify that the
         // CRC function pointer falls within expected code ranges).
-        var crcOff = FindFirstPatternOffset(bytes, "48 8B D9 48 8D 05 ? ? ? ? 48 89 01 E8 ? ? ? ? 48 8B CB 48 83 C4 20 5B E9");
-        if (crcOff < 0) throw new InvalidOperationException("CRC bypass signature not found (FH6 likely updated).");
+        // Denuvo has 3 independent CRC checker instances, each with its own vtable
+        // and function pointer. All 3 must be bypassed — the AOB matches all 3 sites.
+        var crcSig = "48 8B D9 48 8D 05 ? ? ? ? 48 89 01 E8 ? ? ? ? 48 8B CB 48 83 C4 20 5B E9";
+        var crcPattern = Pattern.Parse(crcSig);
+        var crcMatches = new List<(ulong fnPtrAddr, ulong origFnPtr)>();
 
-        var sigAddr = _mainBase + (ulong)crcOff;
-        L($"CRC: sig found at 0x{sigAddr:X}");
-        var leaStart = sigAddr + 3;
-        var leaDisp = ReadInt32(leaStart + 3);
-        var tableBase = leaStart + 7 + (ulong)leaDisp;
-        var fnPtrAddr = tableBase + 48;
-        var origFnPtr = ReadUInt64(fnPtrAddr);
-        if (origFnPtr == 0) throw new InvalidOperationException("CRC function pointer is zero.");
-        L($"CRC: table=0x{tableBase:X}, fnPtr=0x{fnPtrAddr:X}, origFunc=0x{origFnPtr:X}");
+        foreach (var off in Pattern.FindAll(bytes, crcPattern, 32))
+        {
+            var sigAddr = _mainBase + (ulong)off;
+            var leaStart = sigAddr + 3;
+            var leaDisp = ReadInt32(leaStart + 3);
+            var tableBase = leaStart + 7 + (ulong)leaDisp;
+            var fnPtrAddr = tableBase + 48;
+            var origFnPtr = ReadUInt64(fnPtrAddr);
+            if (origFnPtr == 0) continue;
+            L($"CRC: sig found at 0x{sigAddr:X}, table=0x{tableBase:X}, fnPtr=0x{fnPtrAddr:X}, origFunc=0x{origFnPtr:X}");
+            crcMatches.Add((fnPtrAddr, origFnPtr));
+        }
 
-        // Allocate a small cave near the CRC table for our RET stub.
-        // This is much more stable than using a random C3 in the game binary.
-        var retStubAddr = AllocateNear(fnPtrAddr, 4096);
-        WriteBytes(retStubAddr, [0xC3]); // single RET instruction
+        if (crcMatches.Count == 0)
+            throw new InvalidOperationException("CRC bypass signature not found (FH6 likely updated).");
 
-        WriteUInt64(fnPtrAddr, retStubAddr);
-        _crcFunctionPointerAddress = fnPtrAddr;
-        _crcOriginalPointer = origFnPtr;
+        // Allocate one RET stub and point all 3 function pointers to it.
+        var retStubAddr = AllocateNear(crcMatches[0].fnPtrAddr, 4096);
+        WriteBytes(retStubAddr, [0x31, 0xC0, 0xC3]); // XOR EAX,EAX; RET — returns 0 (success)
+
+        foreach (var (fnPtrAddr, origFnPtr) in crcMatches)
+        {
+            WriteUInt64(fnPtrAddr, retStubAddr);
+            L($"CRC bypass: fnPtr at 0x{fnPtrAddr:X} -> stub 0x{retStubAddr:X} (was 0x{origFnPtr:X})");
+        }
+
+        _crcFunctionPointerAddress = crcMatches[0].fnPtrAddr;
+        _crcOriginalPointer = crcMatches[0].origFnPtr;
         _crcRetAddress = retStubAddr;
         _crcRetStubAddress = retStubAddr;
         _crcBypassActive = true;
+        L($"CRC bypass armed: {crcMatches.Count} instances patched");
         ApplyIntegrityBypasses(bytes);
         ApplyValueEncryptionBypass(bytes);
         InstallSeasonHook(bytes);
         StartCrcTimer();
-        L($"CRC bypass armed. ptr=0x{fnPtrAddr:X}, ret-stub=0x{retStubAddr:X} (dedicated cave)");
     }
 
     /// <summary>
@@ -906,11 +919,12 @@ public sealed class RuntimeHookEngine : IDisposable
              [0x74],       // JZ
              [0x90]),      // NOP
 
-            // 6. TerminateProcess guard: CALL [RAX+0x128] / TEST AL,AL / JZ skip / MOV ECX,-1 / CALL[IAT]
+            // 6. TerminateProcess guard: CALL [RAX+0x128] / TEST AL,AL / JZ skip
             // The vtable call returns "ok to terminate" flag — if non-zero, game kills itself.
             // Patch JZ → JMP so TerminateProcess is always skipped.
+            // Broader AOB matches all 13 call sites (JZ displacement varies between them).
             ("TerminateGuard",
-             "FF 90 28 01 00 00 84 C0 74 0B B9 FF FF FF FF FF 15",
+             "FF 90 28 01 00 00 84 C0 74",
              8, 2,
              [0x74],       // JZ
              [0xEB]),      // JMP (always skip TerminateProcess)
@@ -984,6 +998,13 @@ public sealed class RuntimeHookEngine : IDisposable
                         patch[2] = dispBytes[0]; patch[3] = dispBytes[1];
                         patch[4] = dispBytes[2]; patch[5] = dispBytes[3];
                     }
+                    else if (name == "TerminateGuard")
+                    {
+                        // JZ → JMP: change conditional jump to unconditional so
+                        // TerminateProcess is ALWAYS skipped regardless of vtable result.
+                        patch[0] = 0xEB; // JMP (always skip)
+                        patch[1] = current[1]; // keep original displacement
+                    }
                     else
                     {
                         // NOP out all patch bytes
@@ -1004,7 +1025,8 @@ public sealed class RuntimeHookEngine : IDisposable
                     });
                     L($"Integrity bypass: {name} patched at 0x{addr:X}");
                     found = true;
-                    break;
+                    // TerminateGuard has 13 call sites — patch all of them
+                    if (name != "TerminateGuard") break;
                 }
                 if (!found)
                 {
@@ -1014,7 +1036,7 @@ public sealed class RuntimeHookEngine : IDisposable
             }
             catch (Exception ex) { L($"Integrity bypass {name} failed: {ex.Message}"); }
         }
-        L($"Integrity bypasses applied: {_integrityPatches.Count}/7 (pending: {_pendingBypasses.Count})");
+        L($"Integrity bypasses applied: {_integrityPatches.Count} total (pending: {_pendingBypasses.Count})");
     }
 
     /// <summary>
