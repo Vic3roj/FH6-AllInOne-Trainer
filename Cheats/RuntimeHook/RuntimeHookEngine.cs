@@ -623,7 +623,7 @@ public sealed class RuntimeHookEngine : IDisposable
         if (desc.OriginalRegions.Length == 0)
         {
             var nopPatch = desc.Asm;
-            WriteProtectedBytes(hookAddr, nopPatch);
+            WriteHookAtomic(hookAddr, nopPatch);
             return new RuntimeDetour
             {
                 Name = desc.Name,
@@ -659,7 +659,7 @@ public sealed class RuntimeHookEngine : IDisposable
         WriteBytes(caveAddr, cave);
 
         var hookPatch = BuildRelativeJump(hookAddr, caveAddr, desc.HookSize);
-        WriteProtectedBytes(hookAddr, hookPatch);
+        WriteHookAtomic(hookAddr, hookPatch);
 
         return new RuntimeDetour
         {
@@ -694,7 +694,7 @@ public sealed class RuntimeHookEngine : IDisposable
         // Cheats here operate purely via their own code-cave hooks; the game's integrity
         // system is left fully intact. This build tests whether the bypass was the crash.
         _crcBypassActive = true;
-        L("CRC/integrity bypass DISABLED (v7.0-pre: flag-manager ghost removed — game integrity left intact).");
+        L("CRC/integrity bypass DISABLED (flag-manager ghost removed — game integrity left intact).");
         ApplyValueEncryptionBypass(bytes);
         InstallSeasonHook(bytes);
         StartCrcTimer();
@@ -782,7 +782,7 @@ public sealed class RuntimeHookEngine : IDisposable
         // Read original bytes before overwriting
         var originalLea = ReadBytes(hookAddr, 7);
 
-        WriteProtectedBytes(hookAddr, hookPatch);
+        WriteHookAtomic(hookAddr, hookPatch);
 
         // Register as a detour so the CRC timer restores/re-applies it
         _hooks["SeasonCapture"] = new RuntimeDetour
@@ -1321,6 +1321,21 @@ public sealed class RuntimeHookEngine : IDisposable
             throw new InvalidOperationException("VirtualProtectEx failed.");
         try { WriteBytes(address, data); }
         finally { Native.VirtualProtectEx(_handle, new IntPtr((long)address), (UIntPtr)(ulong)data.Length, old, out _); }
+    }
+
+    /// <summary>
+    /// Writes a hook into live game .text with ALL game threads suspended, so no
+    /// thread can execute a half-written instruction. The documented crash cause
+    /// (Event Viewer 0xC000001D illegal instruction at forzahorizon6+0x54790e9)
+    /// was a non-atomic hook install on a hot per-frame function: the CPU ran a
+    /// partially-overwritten instruction. Suspending around the write makes the
+    /// patch appear atomically — same technique MinHook/EasyHook use.
+    /// </summary>
+    private void WriteHookAtomic(ulong address, byte[] data)
+    {
+        var threads = SuspendAllGameThreads();
+        try { WriteProtectedBytes(address, data); }
+        finally { ResumeAllGameThreads(threads); }
     }
 
     private ulong AllocateNear(ulong target, int size)
