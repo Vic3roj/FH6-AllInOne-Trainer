@@ -10,7 +10,7 @@ The current release is the **v6.6.0** pre-release.
 
 - **No anti-cheat bypass is used or needed** for offline single-player. Earlier versions shipped a "CRC / integrity bypass" that reverse engineering later showed was not bypassing anything at all — it was corrupting a normal game subsystem and causing the crashes users reported. v6.6.0 removes all of it; the cheats operate through their own hooks only. (FH6 does not use Denuvo.)
 - **Known issue:** the game may still crash shortly after enabling a cheat on some builds. This is under active investigation — please see [issue #130](../../issues/130) to test the current build and report what you see.
-- **Game build:** cheats are signed against the current Forza build (v379.939). On newer builds (e.g. v382.893) some cheats may not resolve until the signatures are refreshed.
+- **Game build:** cheats are signed against Forza build v379.939. On latest builds (e.g. v382.893) some cheats may not resolve until the signatures are refreshed.
 
 ## Download
 
