@@ -29,6 +29,12 @@ public sealed class RuntimeHookEngine : IDisposable
     private ulong _mainBase;
     private int _mainSize;
     private bool _crcBypassActive;
+    /// <summary>
+    /// When true, attach installs NO hooks at all (no season hook) — pure data-only
+    /// mode for DataOnlyWriter. Leaves .text 100% untouched so there is nothing for
+    /// the game's code-integrity scanner to detect.
+    /// </summary>
+    public bool DataOnlyMode;
     private ulong _crcFunctionPointerAddress;
     private ulong _crcOriginalPointer;
     private ulong _crcRetAddress;
@@ -696,7 +702,7 @@ public sealed class RuntimeHookEngine : IDisposable
         _crcBypassActive = true;
         L("CRC/integrity bypass DISABLED (flag-manager ghost removed — game integrity left intact).");
         ApplyValueEncryptionBypass(bytes);
-        InstallSeasonHook(bytes);
+        if (!DataOnlyMode) InstallSeasonHook(bytes);
         StartCrcTimer();
     }
 

@@ -14,6 +14,7 @@ public sealed class CheatService : IDisposable
     private readonly RuntimeHookEngine _engine = new();
     private readonly SqlExecutor _sql;
     private readonly SeasonChanger _season;
+    private readonly DataOnlyWriter _data;
     private readonly HashSet<RuntimeProfileFeature> _active = new();
     private int _lastAttachedPid;
 
@@ -30,6 +31,7 @@ public sealed class CheatService : IDisposable
         _log = log;
         _sql = new SqlExecutor(_engine);
         _season = new SeasonChanger(_engine);
+        _data = new DataOnlyWriter(_engine);
         _engine.SetLogCallback(msg => _log.Info(msg));
         _game.StatusChanged += OnGameStatusChanged;
     }
@@ -189,5 +191,34 @@ public sealed class CheatService : IDisposable
 
         LastError = null;
         return true;
+    }
+
+    /// <summary>
+    /// DATA-ONLY profile write (v7.0 crash-free path): scan for the profile struct
+    /// by the user's current in-game field values, then write the desired value via
+    /// in-process shellcode (CreateRemoteThread). No .text modification, no hook —
+    /// the same proven-safe mechanism the SQL cheats use, so nothing for the game's
+    /// code-integrity scanner to detect. The user must supply their current value so
+    /// the scan can locate the struct; a sibling field verifies the match is unique.
+    /// </summary>
+    public bool SetProfileValueDataOnly(int fieldOffset, int currentValue,
+        int verifyOffset, int verifyValue, int desiredValue, out string? error)
+    {
+        error = null;
+        _engine.DataOnlyMode = true;   // attach installs no hooks at all
+        if (!EnsureAttached()) return false;
+        try
+        {
+            if (!_data.SetField(fieldOffset, currentValue, verifyOffset, verifyValue, desiredValue))
+            {
+                error = "Profile struct not found. Make sure the current value you entered matches the in-game value exactly.";
+                _log.Error(error);
+                return false;
+            }
+            _log.Info($"DATA-ONLY: set [+0x{fieldOffset:X}] = {desiredValue} (located via current={currentValue}, verify[+0x{verifyOffset:X}]={verifyValue})");
+            LastError = null;
+            return true;
+        }
+        catch (Exception ex) { error = ex.Message; _log.Error($"Data-only write failed: {ex.Message}"); return false; }
     }
 }
