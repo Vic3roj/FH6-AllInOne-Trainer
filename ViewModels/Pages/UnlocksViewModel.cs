@@ -46,15 +46,6 @@ public partial class UnlocksViewModel : PageViewModelBase
     [ObservableProperty] private string _driftMultiText = "10";
     [ObservableProperty] private bool _isNoSkillBreakOn;
 
-    // --- Data-only (crash-free) profile writes: scan for the struct by current
-    //     in-game value, then shellcode-write the desired value. No .text mod. ---
-    [ObservableProperty] private string _doWheelspinsCurrentText = "";
-    [ObservableProperty] private string _doWheelspinsVerifyText = "";   // current Super Wheelspins (uniqueness check)
-    [ObservableProperty] private string _doWheelspinsDesiredText = "999";
-    [ObservableProperty] private string _doSkillPointsCurrentText = "";
-    [ObservableProperty] private string _doSkillPointsVerifyText = "";  // current Wheelspins (uniqueness check)
-    [ObservableProperty] private string _doSkillPointsDesiredText = "999999";
-
     public UnlocksViewModel()
         : this(App.Services.GetRequiredService<CheatService>(),
                App.Services.GetRequiredService<GameProcessService>(),
@@ -243,33 +234,5 @@ public partial class UnlocksViewModel : PageViewModelBase
         var on = !_cheats.IsActive(RuntimeProfileFeature.NoSkillBreak);
         Toggle(RuntimeProfileFeature.NoSkillBreak, on, 0, "No Skill Break");
         IsNoSkillBreakOn = _cheats.IsActive(RuntimeProfileFeature.NoSkillBreak);
-    }
-
-    // ===== Data-Only (crash-free) writes =====
-    // These scan for the profile struct by the user's current in-game value, then
-    // write the desired value via in-process shellcode. No .text modification, no
-    // hook — the game's code-integrity scanner has nothing to detect.
-    [RelayCommand]
-    private void SetWheelspinsDataOnly()
-    {
-        var cur = Parse(DoWheelspinsCurrentText, -1);
-        var verify = Parse(DoWheelspinsVerifyText, -1);
-        var desired = Parse(DoWheelspinsDesiredText, 999);
-        if (cur < 0) { SetStatus(false, "Enter your current Wheelspins count (shown in-game)."); return; }
-        if (verify < 0) { SetStatus(false, "Enter your current Super Wheelspins count (for verification)."); return; }
-        var ok = _cheats.SetProfileValueDataOnly(0x8, cur, 0x10, verify, desired, out var err);
-        SetStatus(ok, ok ? $"Wheelspins set to {desired} (data-only — no crash)." : err);
-    }
-
-    [RelayCommand]
-    private void SetSkillPointsDataOnly()
-    {
-        var cur = Parse(DoSkillPointsCurrentText, -1);
-        var verify = Parse(DoSkillPointsVerifyText, -1);
-        var desired = Parse(DoSkillPointsDesiredText, 999999);
-        if (cur < 0) { SetStatus(false, "Enter your current Skill Points count (shown in-game)."); return; }
-        if (verify < 0) { SetStatus(false, "Enter your current Wheelspins count (for verification)."); return; }
-        var ok = _cheats.SetProfileValueDataOnly(0x40, cur, 0x8, verify, desired, out var err);
-        SetStatus(ok, ok ? $"Skill Points set to {desired} (data-only — no crash)." : err);
     }
 }

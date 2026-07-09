@@ -165,43 +165,6 @@
                 </StackPanel>
             </Border>
 
-            <!-- Data-Only (crash-free) card -->
-            <Border Classes="card" BorderBrush="#3DDC97" BorderThickness="1">
-                <StackPanel Spacing="10">
-                    <TextBlock Text="DATA-ONLY (CRASH-FREE)" Classes="section-header" Foreground="#3DDC97" />
-                    <TextBlock Classes="hint" TextWrapping="Wrap"
-                               Text="Scan-based writes — no game-code modification, no crash. Enter your CURRENT in-game value so the scan can locate it, plus a second value for verification, then set the desired amount." />
-
-                    <!-- Wheelspins (data-only) -->
-                    <Grid ColumnDefinitions="130,*" ColumnSpacing="8">
-                        <TextBlock Grid.Column="0" Text="Wheelspins" VerticalAlignment="Center" FontSize="12" />
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                            <TextBox Text="{Binding DoWheelspinsCurrentText}" Width="70" Watermark="current" />
-                            <TextBox Text="{Binding DoWheelspinsVerifyText}" Width="80" Watermark="super (verify)" />
-                            <TextBlock Text="→" VerticalAlignment="Center" Foreground="{DynamicResource TextDim}" />
-                            <TextBox Text="{Binding DoWheelspinsDesiredText}" Width="60" />
-                            <Button Classes="primary" Content="Set" Padding="8,4" FontSize="10"
-                                    IsEnabled="{Binding CanToggle}"
-                                    Command="{Binding SetWheelspinsDataOnlyCommand}" />
-                        </StackPanel>
-                    </Grid>
-
-                    <!-- Skill Points (data-only) -->
-                    <Grid ColumnDefinitions="130,*" ColumnSpacing="8">
-                        <TextBlock Grid.Column="0" Text="Skill Points" VerticalAlignment="Center" FontSize="12" />
-                        <StackPanel Grid.Column="1" Orientation="Horizontal" Spacing="6" VerticalAlignment="Center">
-                            <TextBox Text="{Binding DoSkillPointsCurrentText}" Width="80" Watermark="current" />
-                            <TextBox Text="{Binding DoSkillPointsVerifyText}" Width="85" Watermark="wheelspins (verify)" />
-                            <TextBlock Text="→" VerticalAlignment="Center" Foreground="{DynamicResource TextDim}" />
-                            <TextBox Text="{Binding DoSkillPointsDesiredText}" Width="70" />
-                            <Button Classes="primary" Content="Set" Padding="8,4" FontSize="10"
-                                    IsEnabled="{Binding CanToggle}"
-                                    Command="{Binding SetSkillPointsDataOnlyCommand}" />
-                        </StackPanel>
-                    </Grid>
-                </StackPanel>
-            </Border>
-
             <!-- Log card -->
             <Border Classes="card">
                 <StackPanel Spacing="6">
