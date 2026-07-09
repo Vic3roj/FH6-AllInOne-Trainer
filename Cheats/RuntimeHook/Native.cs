@@ -63,6 +63,22 @@ internal static class Native
     public static extern UIntPtr VirtualQueryEx(IntPtr hProcess, UIntPtr lpAddress,
         out MemoryBasicInformation64 lpBuffer, UIntPtr dwLength);
 
+    // ===== In-process injection (for hooks that survive the .text scanner) =====
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Ansi, SetLastError = true)]
+    public static extern IntPtr GetProcAddress(IntPtr hModule, string procName);
+
+    [DllImport("kernel32.dll", CharSet = CharSet.Unicode, SetLastError = true)]
+    public static extern IntPtr GetModuleHandle(string lpModuleName);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern IntPtr CreateRemoteThread(IntPtr hProcess, IntPtr lpThreadAttributes,
+        uint dwStackSize, IntPtr lpStartAddress, IntPtr lpParameter,
+        uint dwCreationFlags, out uint lpThreadId);
+
+    [DllImport("kernel32.dll", SetLastError = true)]
+    public static extern uint WaitForSingleObject(IntPtr hHandle, uint dwMilliseconds);
+
     // ===== EnumProcessModulesEx — works on UWP processes where .NET MainModule fails =====
 
     public const uint LIST_MODULES_ALL = 0x03;

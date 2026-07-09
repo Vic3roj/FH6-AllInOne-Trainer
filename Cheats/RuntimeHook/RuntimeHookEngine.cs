@@ -1324,18 +1324,101 @@ public sealed class RuntimeHookEngine : IDisposable
     }
 
     /// <summary>
-    /// Writes a hook into live game .text with ALL game threads suspended, so no
-    /// thread can execute a half-written instruction. The documented crash cause
-    /// (Event Viewer 0xC000001D illegal instruction at forzahorizon6+0x54790e9)
-    /// was a non-atomic hook install on a hot per-frame function: the CPU ran a
-    /// partially-overwritten instruction. Suspending around the write makes the
-    /// patch appear atomically — same technique MinHook/EasyHook use.
+    /// Installs a hook IN-PROCESS via injected shellcode. The shellcode runs inside
+    /// the game (via CreateRemoteThread), calls VirtualProtect + writes the bytes
+    /// from a game thread — making the .text modification invisible to the game's
+    /// external-write integrity scanner. Threads are suspended for atomicity (prevents
+    /// another thread from executing a half-written instruction). This is the key
+    /// difference from the old external WriteProcessMemory approach that was detected.
     /// </summary>
     private void WriteHookAtomic(ulong address, byte[] data)
     {
         var threads = SuspendAllGameThreads();
-        try { WriteProtectedBytes(address, data); }
+        try
+        {
+            var kernel32 = Native.GetModuleHandle("kernel32.dll");
+            var vp = Native.GetProcAddress(kernel32, "VirtualProtect");
+            if (vp == IntPtr.Zero)
+                throw new InvalidOperationException("Could not resolve VirtualProtect");
+
+            var shellcode = BuildHookInstallerShellcode(data, (ulong)vp.ToInt64());
+
+            var codeMem = Native.VirtualAllocEx(_handle, IntPtr.Zero, (UIntPtr)4096,
+                Native.MEM_COMMIT | Native.MEM_RESERVE, Native.PAGE_EXECUTE_READWRITE);
+            if (codeMem == IntPtr.Zero)
+                throw new InvalidOperationException("VirtualAllocEx failed for hook installer");
+
+            try
+            {
+                WriteBytes((ulong)codeMem.ToInt64(), shellcode);
+
+                var thread = Native.CreateRemoteThread(_handle, IntPtr.Zero, 0,
+                    codeMem, new IntPtr((long)address), 0, out _);
+                if (thread == IntPtr.Zero)
+                    throw new InvalidOperationException("CreateRemoteThread failed for hook installer");
+
+                Native.WaitForSingleObject(thread, 5000);
+                Native.CloseHandle(thread);
+            }
+            finally { Native.VirtualFreeEx(_handle, codeMem, UIntPtr.Zero, Native.MEM_RELEASE); }
+
+            L($"Hook installed in-process @ 0x{address:X} ({data.Length}B via shellcode)");
+        }
         finally { ResumeAllGameThreads(threads); }
+    }
+
+    /// <summary>
+    /// Builds x64 shellcode that: VirtualProtect(target, RWX) → memcpy(target, hookBytes) →
+    /// VirtualProtect(target, old). The target address comes from CreateRemoteThread's
+    /// lpParameter (RCX). VirtualProtect address + hook bytes are embedded inline.
+    /// </summary>
+    private static byte[] BuildHookInstallerShellcode(byte[] hookBytes, ulong vpAddr)
+    {
+        var code = new System.Collections.Generic.List<byte>(128);
+
+        // sub rsp, 0x28 (shadow space + align)
+        code.AddRange(new byte[] { 0x48, 0x83, 0xEC, 0x28 });
+        // mov r10, rcx (save target — rcx = lpParameter from CreateRemoteThread)
+        code.AddRange(new byte[] { 0x49, 0x89, 0xCA });
+
+        // --- VirtualProtect(target, hookSize, PAGE_EXECUTE_READWRITE, &old) ---
+        code.AddRange(new byte[] { 0x4C, 0x89, 0xD1 });        // mov rcx, r10 (target)
+        code.Add(0xBA); code.AddRange(BitConverter.GetBytes(hookBytes.Length)); // mov edx, size
+        code.AddRange(new byte[] { 0x41, 0xB8, 0x40, 0x00, 0x00, 0x00 });       // mov r8d, 0x40
+        code.AddRange(new byte[] { 0x4C, 0x8D, 0x4C, 0x24, 0x20 });             // lea r9, [rsp+0x20]
+        code.Add(0x48); code.Add(0xB8); code.AddRange(BitConverter.GetBytes(vpAddr)); // movabs rax, vp
+        code.Add(0xFF); code.Add(0xD0);                          // call rax
+
+        // --- memcpy(target, hookBytes, hookSize) ---
+        code.AddRange(new byte[] { 0x4C, 0x89, 0xD7 });        // mov rdi, r10 (dest = target)
+        int leaPatch = code.Count;
+        code.AddRange(new byte[] { 0x48, 0x8D, 0x35, 0, 0, 0, 0 }); // lea rsi, [rip+disp] (placeholder)
+        code.Add(0xB9); code.AddRange(BitConverter.GetBytes(hookBytes.Length)); // mov ecx, size
+        code.Add(0xF3); code.Add(0xA4);                         // rep movsb
+
+        // --- VirtualProtect(target, hookSize, old, &dummy) ---
+        code.AddRange(new byte[] { 0x4C, 0x89, 0xD1 });        // mov rcx, r10
+        code.Add(0xBA); code.AddRange(BitConverter.GetBytes(hookBytes.Length));
+        code.AddRange(new byte[] { 0x44, 0x8B, 0x44, 0x24, 0x20 }); // mov r8d, [rsp+0x20] (old)
+        code.AddRange(new byte[] { 0x4C, 0x8D, 0x4C, 0x24, 0x20 }); // lea r9, [rsp+0x20]
+        code.Add(0x48); code.Add(0xB8); code.AddRange(BitConverter.GetBytes(vpAddr));
+        code.Add(0xFF); code.Add(0xD0);                         // call rax
+
+        // --- cleanup + return ---
+        code.AddRange(new byte[] { 0x48, 0x83, 0xC4, 0x28 }); // add rsp, 0x28
+        code.Add(0x31); code.Add(0xC0);                        // xor eax, eax
+        code.Add(0xC3);                                         // ret
+
+        // Fix the LEA rsi displacement: RIP after LEA = leaPatch+7, target = code.Count
+        int disp = code.Count - (leaPatch + 7);
+        var db = BitConverter.GetBytes(disp);
+        code[leaPatch + 3] = db[0]; code[leaPatch + 4] = db[1];
+        code[leaPatch + 5] = db[2]; code[leaPatch + 6] = db[3];
+
+        // Append hook bytes (the data the shellcode copies to the target)
+        code.AddRange(hookBytes);
+
+        return code.ToArray();
     }
 
     private ulong AllocateNear(ulong target, int size)
