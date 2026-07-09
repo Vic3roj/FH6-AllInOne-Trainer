@@ -29,28 +29,6 @@ public sealed class RuntimeHookEngine : IDisposable
     private ulong _mainBase;
     private int _mainSize;
     private bool _crcBypassActive;
-    private ulong _crcFunctionPointerAddress;
-    private ulong _crcOriginalPointer;
-    private ulong _crcRetAddress;
-    private ulong _crcRetStubAddress;
-    private Timer? _crcTimer;
-    private int _crcTimerRunning;
-    private static readonly Random _jitter = new();
-    private readonly List<IntegrityPatch> _integrityPatches = new();
-    private readonly List<(string Name, string Signature, int PatchOffset, int PatchLen, byte[] Expected, byte[] Replace)> _pendingBypasses = new();
-    private int _deferredRetryCount;
-
-    private struct IntegrityPatch
-    {
-        public string Name;
-        public ulong Address;
-        public byte[] Original;
-        public byte[] Replacement;
-    }
-
-    // Value Encryption bypass — writes RET at the encryption function so values stay plaintext
-    private ulong _valueEncryptionAddr;
-    private byte[] _valueEncryptionOriginal = [];
 
     private Action<string>? _onLog;
     public bool IsAttached => _handle != IntPtr.Zero && _process is { HasExited: false };
@@ -244,12 +222,7 @@ public sealed class RuntimeHookEngine : IDisposable
     /// </summary>
     public void Detach()
     {
-        StopCrcTimer();
-        RestoreIntegrityBypasses();
-        RestoreValueEncryptionBypass();
         RestoreRuntimeProfileHooks();
-        RestoreCrcPointer();
-        FreeCrcRetStub();
 
         _preResolved = false;
         _preResolvedTargets.Clear();
@@ -261,27 +234,9 @@ public sealed class RuntimeHookEngine : IDisposable
         _mainBase = 0;
         _mainSize = 0;
         _crcBypassActive = false;
-        _pendingBypasses.Clear();
-        _deferredRetryCount = 0;
     }
 
     public void Dispose() => Detach();
-
-    private void StopCrcTimer()
-    {
-        var t = _crcTimer;
-        _crcTimer = null;
-        try { t?.Dispose(); } catch { }
-    }
-
-    private void RestoreValueEncryptionBypass()
-    {
-        if (_valueEncryptionAddr == 0 || _valueEncryptionOriginal.Length == 0) return;
-        try { WriteProtectedBytes(_valueEncryptionAddr, _valueEncryptionOriginal); }
-        catch (Exception ex) { L($"Value Encryption restore failed: {ex.Message}"); }
-        _valueEncryptionAddr = 0;
-        _valueEncryptionOriginal = [];
-    }
 
     private void RestoreRuntimeProfileHooks()
     {
@@ -304,35 +259,6 @@ public sealed class RuntimeHookEngine : IDisposable
             _hooks.Clear();
             _hookedAddresses.Clear();
         }
-    }
-
-    private void RestoreCrcPointer()
-    {
-        if (!_crcBypassActive || _crcFunctionPointerAddress == 0 || _crcOriginalPointer == 0 || _handle == IntPtr.Zero)
-            return;
-        try { WriteUInt64(_crcFunctionPointerAddress, _crcOriginalPointer); }
-        catch (Exception ex) { L($"CRC pointer restore failed: {ex.Message}"); }
-        _crcBypassActive = false;
-    }
-
-    private void RestoreIntegrityBypasses()
-    {
-        if (_integrityPatches.Count == 0) return;
-        foreach (var ip in _integrityPatches)
-        {
-            try { WriteProtectedBytes(ip.Address, ip.Original); }
-            catch (Exception ex) { L($"Could not restore integrity bypass {ip.Name}: {ex.Message}"); }
-        }
-        if (_integrityPatches.Count > 0) L($"Restored {_integrityPatches.Count} integrity bypass patch(es).");
-        _integrityPatches.Clear();
-    }
-
-    private void FreeCrcRetStub()
-    {
-        if (_crcRetStubAddress == 0 || _handle == IntPtr.Zero) return;
-        try { Native.VirtualFreeEx(_handle, new IntPtr((long)_crcRetStubAddress), UIntPtr.Zero, Native.MEM_RELEASE); }
-        catch { }
-        _crcRetStubAddress = 0;
     }
 
     // ===== Profile hooks (Credits / Wheelspins / SP / Drift / NoSkillBreak / Sell) =====
@@ -672,8 +598,6 @@ public sealed class RuntimeHookEngine : IDisposable
         };
     }
 
-    // ===== CRC bypass + heartbeat re-arm =====
-
     private void EnsureCrcBypass()
     {
         if (_crcBypassActive) return;
@@ -681,29 +605,15 @@ public sealed class RuntimeHookEngine : IDisposable
             throw new InvalidOperationException("Main module not captured.");
 
         var bytes = ReadBytes(_mainBase, _mainSize);
-        if (bytes.Length == 0) throw new InvalidOperationException("Could not read main module for CRC bypass.");
+        if (bytes.Length == 0) throw new InvalidOperationException("Could not read main module.");
 
-        // PHASE 1 (v7.0-pre): CRC bypass + ALL integrity patches REMOVED.
-        // RE (Ghidra decompilation of the v379.939 live binary) confirmed the 3 "CRC
-        // checker" objects are a thread-safe flag/bitfield MANAGER — NOT an integrity
-        // scanner and NOT anti-cheat. Replacing their check function with a RET-0 stub
-        // makes flag queries report false, breaking real game logic → crash.
-        // The "integrity check" patches (MemCmp/PageHash/TextHash/CodeSection/Checksum/
-        // TerminateGuard/ResumeReboot/PlayFab) are CONSUMERS of that flag manager, so
-        // patching them also breaks real game logic. None of them protect against cheats.
-        // Cheats here operate purely via their own code-cave hooks; the game's integrity
-        // system is left fully intact. This build tests whether the bypass was the crash.
         _crcBypassActive = true;
-        L("CRC/integrity bypass DISABLED (flag-manager ghost removed — game integrity left intact).");
-        ApplyValueEncryptionBypass(bytes);
         InstallSeasonHook(bytes);
-        StartCrcTimer();
     }
 
     /// <summary>
     /// Installs a code cave hook at the "SeasonSettings Loaded" string reference
-    /// inside FUN_7ff6a3e70460 to capture the this pointer (RDI = param_1).
-    /// The captured pointer is the season entity used by SeasonChanger.
+    /// to capture the season entity pointer. Used by SeasonChanger.
     /// </summary>
     private void InstallSeasonHook(byte[] moduleBytes)
     {
@@ -797,429 +707,6 @@ public sealed class RuntimeHookEngine : IDisposable
 
         _seasonHookInstalled = true;
         L($"Season hook installed. cave=0x{caveAddr:X}, storage=0x{_seasonEntityStorageAddr:X}");
-    }
-
-    /// <summary>
-    /// Patches the value encryption function to immediately return (RET).
-    /// This keeps credits/wheelspins/skillpoints in plaintext so our hooks can modify them.
-    /// Based on Omkmakwana's proven approach: write 0xC3 at the function prologue.
-    /// </summary>
-    private void ApplyValueEncryptionBypass(byte[] moduleBytes)
-    {
-        if (_valueEncryptionAddr != 0) return;
-        var sig = "48 89 5C 24 ?? 48 89 6C 24 ?? 48 89 74 24 ?? 57 48 83 EC ?? 8B EA 48 8B F9 8B F1 48 8B 0D";
-        var pattern = Pattern.Parse(sig);
-        foreach (var off in Pattern.FindAll(moduleBytes, pattern, 8))
-        {
-            var addr = _mainBase + (ulong)off;
-            var orig = ReadBytes(addr, 1);
-            if (orig.Length < 1) continue;
-            WriteProtectedBytes(addr, [0xC3]); // RET — function returns immediately
-            _valueEncryptionAddr = addr;
-            _valueEncryptionOriginal = orig;
-            L($"Value Encryption bypass: patched at 0x{addr:X} (wrote RET)");
-            return;
-        }
-        L("Value Encryption bypass: signature NOT FOUND (skipped)");
-    }
-
-    /// <summary>
-    /// Ensures value encryption bypass is applied even when using FNV direct-write path
-    /// (which doesn't need the full CRC bypass). Without this, the game encrypts profile
-    /// values and our plaintext writes are overwritten with encrypted garbage.
-    /// </summary>
-    private void EnsureValueEncryptionBypass()
-    {
-        if (_valueEncryptionAddr != 0) return;
-        if (_mainBase == 0 || _mainSize <= 0) return;
-
-        // If CRC bypass is active, encryption bypass is already included
-        if (_crcBypassActive) return;
-
-        var bytes = ReadBytes(_mainBase, _mainSize);
-        if (bytes.Length == 0) return;
-
-        ApplyValueEncryptionBypass(bytes);
-    }
-
-    /// <summary>
-    /// Patch 5 integrity check functions to always return "pass".
-    /// Each check verifies code section integrity by hashing or comparing bytes.
-    /// We patch the conditional jump after each check so it always takes the "match/pass" path.
-    /// These patches are included in the heartbeat dance so they're restored during the clean window.
-    /// </summary>
-    private void ApplyIntegrityBypasses(byte[] moduleBytes)
-    {
-        var bypasses = new (string Name, string Signature, int PatchOffset, int PatchLen, byte[] Expected, byte[] Replace)[]
-        {
-            // 1. MemCmp_check: TEST EAX,EAX / JNZ mismatch → NOP NOP (always fall through to match path)
-            // Pattern: CALL memcmp / MOV RBX,RAX / MOV RCX,RAX / CALL check / TEST EAX,EAX / JNZ
-            ("MemCmp",
-             "E8 ?? ?? ?? ?? 48 8B D8 48 8B C8 E8 ?? ?? ?? ?? 85 C0 75",
-             18, 2,
-             [0x75],      // JNZ
-             [0x90]),     // NOP — first byte only, we NOP both bytes below
-
-            // 2. PageHash_start: TEST RAX,RAX / JNZ → NOP NOP (always take "hash was 0 = clean" path)
-            ("PageHash",
-             "48 83 EC 20 48 8B F1 BA 02 00 00 00 48 8B 89 50 02 00 00 E8 ?? ?? ?? ?? 48 8B F8 48 85 C0 75",
-             30, 2,
-             [0x75],      // JNZ
-             [0x90]),     // NOP
-
-            // 3. TextSection_hash: TEST RAX,RAX / CMOVNZ ECX,EDX → NOP NOP NOP (flag never set to 1)
-            ("TextHash",
-             "48 8D 15 ?? ?? ?? ?? 48 8B C8 FF 15 ?? ?? ?? ?? 0F B6 0D ?? ?? ?? ?? BA 01 00 00 00 48 85 C0 0F 45",
-             31, 3,
-             [0x0F, 0x45], // CMOVNZ
-             [0x90, 0x90]), // NOP NOP
-
-            // 4. CodeSection_verify: CALL verify_chunk → MOV EAX,1 (always return pass)
-            ("CodeSection",
-             "48 8D 59 08 48 8B FA 48 8B CB BA 20 00 00 00 E8",
-             15, 5,
-             [0xE8],       // CALL
-             [0xB8]),      // MOV EAX, imm32 (first byte; rest is 01 00 00 00)
-
-            // 5. Checksum_verify: TEST AL,AL / JZ fail → NOP NOP (always "pass")
-            ("Checksum",
-             "48 8B D6 48 8B CF E8 ?? ?? ?? ?? 84 C0 74",
-             13, 2,
-             [0x74],       // JZ
-             [0x90]),      // NOP
-
-            // 6. TerminateProcess guard: CALL [RAX+0x128] / TEST AL,AL / JZ skip
-            // The vtable call returns "ok to terminate" flag — if non-zero, game kills itself.
-            // Patch JZ → JMP so TerminateProcess is always skipped.
-            // Broader AOB matches all 13 call sites (JZ displacement varies between them).
-            ("TerminateGuard",
-             "FF 90 28 01 00 00 84 C0 74",
-             8, 2,
-             [0x74],       // JZ
-             [0xEB]),      // JMP (always skip TerminateProcess)
-
-            // 7. ResumeReboot: On GamePass, alt-tab triggers Windows suspend/resume.
-            // The PFGameSaves resume handler checks state and may decide to silently reboot.
-            // Patch the JNZ that gates the reboot paths to unconditional JMP (skip all 3).
-            // Pattern: MOVDQA + MOVDQU + MOV 0 + CMP [rip],4 + JNZ
-            ("ResumeReboot",
-             "66 0F 6F 05 ?? ?? ?? ?? F3 0F 7F 44 24 50 C6 44 24 40 00 80 3D ?? ?? ?? ?? 04 0F 85",
-             26, 6,
-             [0x0F, 0x85],   // JNZ rel32
-             [0x90, 0xE9]),  // NOP; JMP rel32 (displacement adjusted +1 at patch time)
-
-            // 8. PlayFabRunReinit: RunReinitializationTasks schedules game shutdown during
-            // PlayFab resume handling. RET at entry makes it a no-op, covering all 3 call sites.
-            ("PlayFabRunReinit",
-             "48 8B C4 48 81 EC D8 00 00 00 C6 40 98 00 4C 8D 84",
-             0, 1,
-             [0x48],       // MOV RAX,RSP (first byte of prologue)
-             [0xC3]),      // RET
-
-            // 9. PlayFabReboot1: NOP the vtable reboot call in normal completion path.
-            // After RunReinitTasks, a std::function reboot callback is invoked via CALL [RAX+10h].
-            ("PlayFabReboot1",
-             "48 85 C9 0F 84 0C 09 00 00 48 8B 01 FF 50 10",
-             12, 3,
-             [0xFF],       // CALL [RAX+0x10]
-             [0x90]),      // NOP
-
-            // 10. PlayFabReboot2: NOP the vtable reboot call in failure path.
-            // Same pattern but different JZ displacement.
-            ("PlayFabReboot2",
-             "48 85 C9 0F 84 E7 04 00 00 48 8B 01 FF 50 10",
-             12, 3,
-             [0xFF],       // CALL [RAX+0x10]
-             [0x90]),      // NOP
-        };
-
-        foreach (var (name, sig, patchOffset, patchLen, expected, replace) in bypasses)
-        {
-            try
-            {
-                var pattern = Pattern.Parse(sig);
-                var found = false;
-                foreach (var off in Pattern.FindAll(moduleBytes, pattern, 32))
-                {
-                    var addr = _mainBase + (ulong)(off + patchOffset);
-                    var current = ReadBytes(addr, patchLen);
-                    if (current.Length < patchLen) continue;
-
-                    // Verify the byte we're about to patch matches what we expect
-                    if (current[0] != expected[0]) continue;
-
-                    // Build replacement bytes
-                    var patch = new byte[patchLen];
-                    if (name == "CodeSection")
-                    {
-                        // Special case: replace CALL (5 bytes) with MOV EAX, 1 (5 bytes)
-                        patch[0] = 0xB8; patch[1] = 0x01; patch[2] = 0x00; patch[3] = 0x00; patch[4] = 0x00;
-                    }
-                    else if (name == "ResumeReboot")
-                    {
-                        // JNZ rel32 (0F 85 XX XX XX XX) → NOP + JMP rel32 (90 E9 XX+1 XX XX XX)
-                        // JMP is 5 bytes (vs JNZ 6), so displacement increases by 1
-                        patch[0] = 0x90; // NOP
-                        patch[1] = 0xE9; // JMP rel32
-                        var origDisp = BitConverter.ToInt32(current, 2);
-                        var newDisp = origDisp + 1;
-                        var dispBytes = BitConverter.GetBytes(newDisp);
-                        patch[2] = dispBytes[0]; patch[3] = dispBytes[1];
-                        patch[4] = dispBytes[2]; patch[5] = dispBytes[3];
-                    }
-                    else if (name == "TerminateGuard")
-                    {
-                        // JZ → JMP: change conditional jump to unconditional so
-                        // TerminateProcess is ALWAYS skipped regardless of vtable result.
-                        patch[0] = 0xEB; // JMP (always skip)
-                        patch[1] = current[1]; // keep original displacement
-                    }
-                    else
-                    {
-                        // NOP out all patch bytes
-                        for (var i = 0; i < patchLen; i++) patch[i] = 0x90;
-                    }
-
-                    // All patches are permanent. The CRC timer toggles only cheat hooks
-                    // and the CRC pointer — integrity checks stay bypassed at all times
-                    // so the restored CRC function sees "pass" on every check, even though
-                    // PlayFab / shutdown-blocker patches are still applied in .text.
-                    WriteProtectedBytes(addr, patch);
-                    _integrityPatches.Add(new IntegrityPatch
-                    {
-                        Name = name,
-                        Address = addr,
-                        Original = current,
-                        Replacement = patch,
-                    });
-                    L($"Integrity bypass: {name} patched at 0x{addr:X}");
-                    found = true;
-                    // TerminateGuard has 13 call sites — patch all of them
-                    if (name != "TerminateGuard") break;
-                }
-                if (!found)
-                {
-                    L($"Integrity bypass: {name} NOT FOUND (will retry — Denuvo may not have decrypted this page yet)");
-                    _pendingBypasses.Add((name, sig, patchOffset, patchLen, expected, replace));
-                }
-            }
-            catch (Exception ex) { L($"Integrity bypass {name} failed: {ex.Message}"); }
-        }
-        L($"Integrity bypasses applied: {_integrityPatches.Count} total (pending: {_pendingBypasses.Count})");
-    }
-
-    /// <summary>
-    /// Retry finding integrity bypasses that failed on the first scan.
-    /// Denuvo decrypts code pages on demand — signatures for PageHash/TextHash may only
-    /// become visible after the game has run those checks at least once.
-    /// Called from CrcTimerTick before the patch phase.
-    /// </summary>
-    private void RetryPendingBypasses()
-    {
-        if (_pendingBypasses.Count == 0 || _mainBase == 0 || _mainSize <= 0) return;
-        if (_deferredRetryCount > 60) return; // Give up after ~5 minutes of retrying
-
-        _deferredRetryCount++;
-        var bytes = ReadBytes(_mainBase, _mainSize);
-        if (bytes.Length == 0) return;
-
-        var found = new List<int>();
-        for (var i = 0; i < _pendingBypasses.Count; i++)
-        {
-            var (name, sig, patchOffset, patchLen, expected, replace) = _pendingBypasses[i];
-            try
-            {
-                var pattern = Pattern.Parse(sig);
-                foreach (var off in Pattern.FindAll(bytes, pattern, 32))
-                {
-                    var addr = _mainBase + (ulong)(off + patchOffset);
-                    var current = ReadBytes(addr, patchLen);
-                    if (current.Length < patchLen) continue;
-                    if (current[0] != expected[0]) continue;
-
-                    var patch = new byte[patchLen];
-                    if (name == "CodeSection")
-                    {
-                        patch[0] = 0xB8; patch[1] = 0x01; patch[2] = 0x00; patch[3] = 0x00; patch[4] = 0x00;
-                    }
-                    else
-                    {
-                        for (var j = 0; j < patchLen; j++) patch[j] = 0x90;
-                    }
-
-                    _integrityPatches.Add(new IntegrityPatch
-                    {
-                        Name = name,
-                        Address = addr,
-                        Original = current,
-                        Replacement = patch,
-                    });
-                    L($"Deferred bypass: {name} FOUND at 0x{addr:X} (attempt #{_deferredRetryCount})");
-                    found.Add(i);
-                    break;
-                }
-            }
-            catch { /* ignore */ }
-        }
-
-        // Remove found entries from pending list (iterate in reverse to preserve indices)
-        for (var i = found.Count - 1; i >= 0; i--)
-            _pendingBypasses.RemoveAt(found[i]);
-
-        if (found.Count > 0)
-            L($"Deferred bypass: found {found.Count} new ({_integrityPatches.Count}/7 patched, {_pendingBypasses.Count} pending)");
-    }
-
-    private void StartCrcTimer()
-    {
-        // CRC timer disabled — all patches are permanent and the CRC function
-        // pointer stays pointed at our RET stub permanently. No clean window
-        // needed because the CRC function never runs (never hashes .text).
-        // Previous versions toggled patches during a clean window so the CRC
-        // hash would match, but permanent patches make the hash mismatch worse.
-    }
-
-    /// <summary>
-    /// CRC heartbeat re-arm with thread suspension for atomic patching.
-    ///
-    /// Timing: 5s base cycle (±1.5s jitter), 2s clean window.
-    /// Old approach was 10s cycle, 1s clean — the game's integrity check had a
-    /// 90% chance of hitting the patched window, causing the game to shut down.
-    /// New approach: ~3s patched / 2s clean = ~60% patched. With jitter the game
-    /// can't predict when patches are visible.
-    ///
-    /// Phase 1: Suspend threads, restore original bytes + CRC pointer atomically, resume.
-    /// Phase 2: Sleep 2s (game runs integrity check and passes).
-    /// Phase 3: Suspend threads, re-apply patches + CRC bypass, resume.
-    /// </summary>
-    private void CrcTimerTick(object? _)
-    {
-        if (Interlocked.Exchange(ref _crcTimerRunning, 1) == 1) return;
-        try
-        {
-            if (!_crcBypassActive || _handle == IntPtr.Zero) return;
-
-            var tickStart = Environment.TickCount64;
-            var hookCount = _hooks.Count;
-            var permCount = _integrityPatches.Count;
-
-            // Phase 1: restore originals atomically (all threads suspended)
-            lock (_lock)
-            {
-                if (!_crcBypassActive || _handle == IntPtr.Zero || _process?.HasExited != false) return;
-                var sw = System.Diagnostics.Stopwatch.StartNew();
-                var threads = SuspendAllGameThreads();
-                try
-                {
-                    var p1Fails = 0;
-                    var p1ProcessDead = false;
-                    foreach (var det in _hooks.Values)
-                    {
-                        try { WriteProtectedBytes(det.Address, det.Original); }
-                        catch (Exception ex)
-                        {
-                            p1Fails++;
-                            L($"CRC p1 restore {det.Name} failed: {ex.Message}");
-                            if (IsProcessDead()) { p1ProcessDead = true; break; }
-                        }
-                    }
-                    if (!p1ProcessDead)
-                    {
-                        // All integrity patches are permanent — never restored.
-                        // The CRC function runs during the clean window but every
-                        // check it calls is already patched to return "pass".
-                    }
-                    if (!p1ProcessDead)
-                    {
-                        try { WriteUInt64(_crcFunctionPointerAddress, _crcOriginalPointer); }
-                        catch (Exception ex) { L($"CRC p1 restore CRC pointer failed: {ex.Message}"); }
-                    }
-                    sw.Stop();
-                    L($"CRC tick: p1 restore done in {sw.ElapsedMilliseconds}ms (suspended {threads.Count} threads, {hookCount} hooks, {permCount} permanent patches, {p1Fails} hook failures)");
-
-                    // Spike detection: if p1 took too long, abort the tick.
-                    // Originals are restored — this is the safest state. Don't re-apply patches.
-                    if (sw.ElapsedMilliseconds > 500)
-                    {
-                        L($"CRC tick: SPIKE detected ({sw.ElapsedMilliseconds}ms p1) — skipping re-apply to avoid detection");
-                        return;
-                    }
-
-                    // Process death: if the game died during p1, stop the timer.
-                    if (p1ProcessDead || _process?.HasExited != false)
-                    {
-                        L("CRC tick: game process died during p1 — disarming CRC timer");
-                        _crcBypassActive = false;
-                        return;
-                    }
-                }
-                finally { ResumeAllGameThreads(threads); }
-            }
-
-            // Clean window: let the game run integrity checks.
-            // 800ms is sufficient for checks while minimizing PlayFab state inconsistency.
-            Thread.Sleep(800);
-
-            // Retry any integrity bypasses that weren't found initially.
-            if (_pendingBypasses.Count > 0)
-                RetryPendingBypasses();
-
-            // Phase 2: re-apply patches atomically (all threads suspended)
-            lock (_lock)
-            {
-                if (!_crcBypassActive || _handle == IntPtr.Zero || _process?.HasExited != false) return;
-                var sw = System.Diagnostics.Stopwatch.StartNew();
-                var threads = SuspendAllGameThreads();
-                try
-                {
-                    var p2Fails = 0;
-                    var p2ProcessDead = false;
-                    try { WriteUInt64(_crcFunctionPointerAddress, _crcRetAddress); }
-                    catch (Exception ex) { L($"CRC p2 CRC pointer failed: {ex.Message}"); p2ProcessDead = IsProcessDead(); }
-                    if (!p2ProcessDead && _valueEncryptionAddr != 0 && _valueEncryptionOriginal.Length > 0)
-                    {
-                        try { WriteProtectedBytes(_valueEncryptionAddr, [0xC3]); }
-                        catch (Exception ex) { L($"CRC p2 value-encryption failed: {ex.Message}"); }
-                    }
-                    if (!p2ProcessDead)
-                    {
-                        // All integrity patches are permanent — no re-apply needed.
-                    }
-                    if (!p2ProcessDead)
-                    {
-                        foreach (var det in _hooks.Values)
-                        {
-                            try { WriteProtectedBytes(det.Address, det.Patch); }
-                            catch (Exception ex) { p2Fails++; L($"CRC p2 re-apply {det.Name} failed: {ex.Message}"); if (IsProcessDead()) { p2ProcessDead = true; break; } }
-                        }
-                    }
-                    sw.Stop();
-                    L($"CRC tick: p2 re-apply done in {sw.ElapsedMilliseconds}ms ({hookCount} hooks, {p2Fails} failures)");
-
-                    if (p2ProcessDead)
-                    {
-                        L("CRC tick: game process died during p2 — disarming CRC timer");
-                        _crcBypassActive = false;
-                    }
-                }
-                finally { ResumeAllGameThreads(threads); }
-            }
-
-            L($"CRC tick: total {Environment.TickCount64 - tickStart}ms");
-        }
-        catch (Exception ex) { L($"CRC tick uncaught: {ex.Message}"); }
-        finally
-        {
-            Interlocked.Exchange(ref _crcTimerRunning, 0);
-            // Reschedule with random jitter: 3.5s base ± 1s
-            // Shorter cycle + longer clean window = patches visible ~43% of time (vs ~86% before)
-            try
-            {
-                var nextMs = 3500 + _jitter.Next(-1000, 1001);
-                _crcTimer?.Change(nextMs, Timeout.Infinite);
-            }
-            catch { /* timer disposed during detach */ }
-        }
     }
 
     private bool IsProcessDead()
